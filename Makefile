@@ -1,8 +1,12 @@
+-include .env
+export
+
 include ./Makefile.Common
 
 BUILD_DIR ?= $(SRC_ROOT)/build
 OS := $(shell uname | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m)
+BINARY := $(BUILD_DIR)/seed
 
 CHECKS = generate lint test tidy fmt
 
@@ -22,7 +26,7 @@ endif
 
 .PHONY: build
 build: install-tools
-	GOOS=$(OS) GOARCH=$(ARCH) go build -o $(BUILD_DIR)/seed
+	GOOS=$(OS) GOARCH=$(ARCH) go build -o $(BINARY)
 
 # TODO: fix this release through goreleaser. Goreleaser installed through tools.go
 # is the OSS version and doesn't support the `partial:` option in the
@@ -35,6 +39,10 @@ grbuild:
 dockerbuild:
 	$(MAKE) build OS=$(OS) ARCH=$(ARCH)
 	docker build . -t gen:local
+
+.PHONY: run
+run: build
+	$(BINARY)
 
 # Setting the paralellism to 1 to improve output readability. Reevaluate later as needed for performance
 .PHONY: checks

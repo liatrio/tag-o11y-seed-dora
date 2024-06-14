@@ -27,3 +27,5 @@ build/
 
 # Brew
 Brewfile.lock.json
+
+.env

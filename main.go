@@ -16,11 +16,58 @@ import (
 )
 
 var (
-	logger *zap.Logger
+	logger                     *zap.Logger
+	doraElitePerformanceLevel  *DoraPerformanceLevel
+	doraHighPerformanceLevel   *DoraPerformanceLevel
+	doraMediumPerformanceLevel *DoraPerformanceLevel
+	doraLowPerformanceLevel    *DoraPerformanceLevel
 )
+
+type DoraPerformanceLevel struct {
+	Level string `json:"level"`
+}
+
+// Elite:
+// 	Deployment Frequency: On-demand (multiple deploys per day)
+// 	Lead Time for Changes: Less than one day
+// 	Time to Restore Service: Less than one hour
+// 	Change Failure Rate: 0-15%
+
+// High:
+// 	Deployment Frequency: Between once per day and once per week
+// 	Lead Time for Changes: Between one day and one week
+// 	Time to Restore Service: Less than one day
+// 	Change Failure Rate: 0-15%
+
+// Medium:
+// 	Deployment Frequency: Between once per week and once per month
+// 	Lead Time for Changes: Between one week and one month
+// 	Time to Restore Service: Less than one day
+// 	Change Failure Rate: 0-30%
+// Low:
+// 	Deployment Frequency: Between once per month and once every six months
+// 	Lead Time for Changes: Between one month and six months
+// 	Time to Restore Service: Between one day and one week
+// 	Change Failure Rate: 0-45%
 
 func init() {
 	var err error
+
+	doraElitePerformanceLevel = &DoraPerformanceLevel{
+		Level: "elite",
+	}
+
+	doraHighPerformanceLevel = &DoraPerformanceLevel{
+		Level: "high",
+	}
+
+	doraMediumPerformanceLevel = &DoraPerformanceLevel{
+		Level: "medium",
+	}
+
+	doraLowPerformanceLevel = &DoraPerformanceLevel{
+		Level: "low",
+	}
 
 	rawJSON := []byte(`{
         "level": "debug",
@@ -137,7 +184,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	url := "http://localhost:8088/events"
+	url := os.Getenv("OTEL_WEBHOOK_URL")
+	if url == "" {
+		logger.Sugar().Error("OTEL_WEBHOOK_URL is not set")
+		return
+	}
+
 	dataPaths := []string{"./data/issue.json", "./data/deployment.json"}
 
 	for _, path := range dataPaths {
