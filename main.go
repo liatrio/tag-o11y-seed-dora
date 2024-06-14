@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,6 +97,36 @@ func init() {
 	}()
 }
 
+// InPlaceUpdateJSONValue updates the value of a JSON field in a map in place.
+// The path is a dot-separated string that represents the path to the field.
+// The newValue is the new value to set.
+// The function returns an error if the path is not found.
+func InPlaceUpdateJSONValue(data map[string]interface{}, path string, newValue interface{}) error {
+	keys := strings.Split(path, ".")
+	lastKey := keys[len(keys)-1]
+
+	// Traverse the map according to the path
+	var current interface{} = data
+	for _, key := range keys[:len(keys)-1] {
+		switch currentMap := current.(type) {
+		case map[string]interface{}:
+			current = currentMap[key]
+		default:
+			return fmt.Errorf("path not found: %s", path)
+		}
+	}
+
+	// Update the value at the last key
+	switch currentMap := current.(type) {
+	case map[string]interface{}:
+		currentMap[lastKey] = newValue
+	default:
+		return fmt.Errorf("path not found: %s", path)
+	}
+
+	return nil
+}
+
 func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 	re := regexp.MustCompile(fmt.Sprintf(`(.*?)%s(.*)`, regexp.QuoteMeta(pattern)))
 	updatedContent := re.ReplaceAll(b, []byte("${1}"+repl+"${2}"))
@@ -113,14 +144,28 @@ func generateTimestamps(count int) []string {
 	return timestamps
 }
 
-func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
+func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
 	defer wg.Done()
 	select {
 	case <-ctx.Done():
 		logger.Sugar().Info("Context is canceled")
 		return
 	default:
-		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+
+		// newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+
+		path := "body.deployment.created_at"
+		err := InPlaceUpdateJSONValue(data, path, ts)
+		if err != nil {
+			logger.Sugar().Errorf("Path not found: %s in object\n error: %v", path, err)
+			return
+		}
+
+		newPayload, err := json.Marshal(data)
+		if err != nil {
+			logger.Sugar().Error("Failed to marshal payload: ", err)
+			return
+		}
 
 		resp, err := client.Post(url, "application/json", bytes.NewBuffer(newPayload))
 		if err != nil {
@@ -165,13 +210,20 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 		return
 	}
 
-	timestamps := generateTimestamps(10)
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
+		return
+	}
+
+	timestamps := generateTimestamps(1)
 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
 
 	var wg sync.WaitGroup
 	for _, ts := range timestamps {
 		wg.Add(1)
-		go sendPayload(ctx, &wg, client, url, payload, ts)
+		go sendPayload(ctx, &wg, client, url, data, ts)
+		// go sendPayload(ctx, &wg, client, url, payload, ts)
 	}
 
 	wg.Wait()
@@ -190,7 +242,8 @@ func main() {
 		return
 	}
 
-	dataPaths := []string{"./data/issue.json", "./data/deployment.json"}
+	dataPaths := []string{"./data/raw-deployment.json"}
+	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
 
 	for _, path := range dataPaths {
 		sendFilePayloadsWithContext(ctx, url, path)
