@@ -25,7 +25,8 @@ var (
 )
 
 type DoraPerformanceLevel struct {
-	Level string `json:"level"`
+	Level                  string
+	DaysBetweenDeployments int
 }
 
 // Elite:
@@ -55,19 +56,23 @@ func init() {
 	var err error
 
 	doraElitePerformanceLevel = &DoraPerformanceLevel{
-		Level: "elite",
+		Level:                  "elite",
+		DaysBetweenDeployments: 0, // Will be treated as a special case to indicate multiple deploys per day
 	}
 
 	doraHighPerformanceLevel = &DoraPerformanceLevel{
-		Level: "high",
+		Level:                  "high",
+		DaysBetweenDeployments: 1,
 	}
 
 	doraMediumPerformanceLevel = &DoraPerformanceLevel{
-		Level: "medium",
+		Level:                  "medium",
+		DaysBetweenDeployments: 7,
 	}
 
 	doraLowPerformanceLevel = &DoraPerformanceLevel{
-		Level: "low",
+		Level:                  "low",
+		DaysBetweenDeployments: 30,
 	}
 
 	rawJSON := []byte(`{
@@ -133,11 +138,11 @@ func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 	return updatedContent
 }
 
-func generateTimestamps(count int) []string {
+func generateTimestamps(count int, durationBetweenEvents time.Duration) []string {
 	var timestamps []string
 	for i := 1; i <= count; i++ {
-		days := time.Duration(i) * 24 * time.Hour
-		t := time.Now().Add(-days)
+		eventDifference := time.Duration(i) * durationBetweenEvents
+		t := time.Now().Add(-eventDifference)
 		timestamps = append(timestamps, t.Format("2006-01-02T15:04:05Z"))
 	}
 
@@ -193,7 +198,7 @@ func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, u
 	}
 }
 
-func sendFilePayloadsWithContext(ctx context.Context, url string, filePath string) {
+func sendFilePayloadsWithContext(ctx context.Context, url string, filePath string, doraTeam DoraPerformanceLevel) {
 	client := &http.Client{
 		Timeout: time.Second * 10,
 	}
@@ -211,21 +216,41 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 		return
 	}
 
-	// var data map[string]interface{}
-	// if err := json.Unmarshal(payload, &data); err != nil {
-	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
-	// 	return
-	// }
-
+	// Months of data
+	numberOfMonths := 6
+	var numberOfTimestamps int
 	timestamps := generateTimestamps(20)
 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
 
 	var wg sync.WaitGroup
 	for _, ts := range timestamps {
 		wg.Add(1)
-		// go sendPayload(ctx, &wg, client, url, data, ts)
-		go sendPayload(ctx, &wg, client, url, payload, ts)
+
+		go func() {
+			defer wg.Done()
+			switch filePath {
+			case "./data/deployment_event-flattened.json":
+				logger.Sugar().Infof("Sending deployment event for %s Dora Performance Level", doraTeam.Level)
+				payload, err := createDeploymentPayload(doraTeam)
+			case "./data/incident_created_event-flattened.json":
+				logger.Sugar().Error("Not implemented yet")
+			case "./data/pull_request_closed_event-flattened.json":
+				logger.Sugar().Error("Not implemented yet")
+			default:
+			}
+
+			// go sendPayload(ctx, &wg, client, url, data, ts)
+			sendPayload(ctx, &wg, client, url, payload, ts)
+		}()
 	}
+
+	// var data map[string]interface{}
+	// if err := json.Unmarshal(payload, &data); err != nil {
+	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
+	// 	return
+	// }
+
+	// Handle Elite Dora Performance Level
 
 	wg.Wait()
 
@@ -243,11 +268,90 @@ func main() {
 		return
 	}
 
-	dataPaths := []string{"./data/deployment_event-flattened.json"}
+	doraTeams := []DoraPerformanceLevel{
+		*doraElitePerformanceLevel,
+		*doraHighPerformanceLevel,
+		*doraMediumPerformanceLevel,
+		*doraLowPerformanceLevel,
+	}
+
+	payloadFilePaths := []string{"./data/deployment_event-flattened.json"}
 	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
 
-	for _, path := range dataPaths {
-		sendFilePayloadsWithContext(ctx, url, path)
+	doraWg := sync.WaitGroup{}
+	for _, doraTeam := range doraTeams {
+		doraWg.Add(1)
+		go func() {
+			defer doraWg.Done()
+			logger.Sugar().Infof("Dora Performance Level: %s\n", doraTeam.Level)
+			sendMetricsForDoraTeam(ctx, url, doraTeam, payloadFilePaths)
+		}()
 	}
+
+	doraWg.Wait()
+	// for _, path := range payloadFilePaths {
+	// 	//sendFilePayloadsWithContext(ctx, url, path)
+	// }
 	logger.Sugar().Info("Successfully sent all payloads")
+}
+
+func sendMetricsForDoraTeam(ctx context.Context, url string, doraTeam DoraPerformanceLevel, payloadFilePaths []string) {
+	fileWg := sync.WaitGroup{}
+	switch doraTeam.Level {
+	case "elite":
+		// Deployment Frequency: On-demand (multiple deploys per day)
+		// Lead Time for Changes: Less than one day
+		// Time to Restore Service: Less than one hour
+		// Change Failure Rate: 0-15%
+		logger.Sugar().Info("Sending metrics for Elite Dora Performance Level")
+		for _, path := range payloadFilePaths {
+			fileWg.Add(1)
+			go func() {
+				defer fileWg.Done()
+				sendFilePayloadsWithContext(ctx, url, path, doraTeam)
+			}()
+		}
+	case "high":
+		// Deployment Frequency: Between once per day and once per week
+		// Lead Time for Changes: Between one day and one week
+		// Time to Restore Service: Less than one day
+		// Change Failure Rate: 0-15%
+		logger.Sugar().Info("Sending metrics for High Dora Performance Level")
+		for _, path := range payloadFilePaths {
+			fileWg.Add(1)
+			go func() {
+				defer fileWg.Done()
+				sendFilePayloadsWithContext(ctx, url, path, doraTeam)
+			}()
+		}
+	case "medium":
+		// Deployment Frequency: Between once per week and once per month
+		// Lead Time for Changes: Between one week and one month
+		// Time to Restore Service: Less than one day
+		// Change Failure Rate: 0-30%
+		logger.Sugar().Info("Sending metrics for Medium Dora Performance Level")
+		for _, path := range payloadFilePaths {
+			fileWg.Add(1)
+			go func() {
+				defer fileWg.Done()
+				sendFilePayloadsWithContext(ctx, url, path, doraTeam)
+			}()
+		}
+	case "low":
+		// Deployment Frequency: Between once per month and once every six months
+		// Lead Time for Changes: Between one month and six months
+		// Time to Restore Service: Between one day and one week
+		// Change Failure Rate: 0-45%
+		logger.Sugar().Info("Sending metrics for Low Dora Performance Level")
+		for _, path := range payloadFilePaths {
+			fileWg.Add(1)
+			go func() {
+				defer fileWg.Done()
+				sendFilePayloadsWithContext(ctx, url, path, doraTeam)
+			}()
+		}
+	default:
+		logger.Sugar().Error("Invalid Dora Performance Level")
+	}
+	fileWg.Wait()
 }
