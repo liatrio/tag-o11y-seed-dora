@@ -75,7 +75,7 @@ func init() {
         "encoding": "json",
         "outputPaths": ["stdout"],
         "errorOutputPaths": ["stderr"],
-        "initialFields": {"service": "dora-the-explorer"},
+        "initialFields": {"service": "seed-dora-logs"},
         "encoderConfig": {
             "messageKey": "message",
             "levelKey": "level",
@@ -144,7 +144,8 @@ func generateTimestamps(count int) []string {
 	return timestamps
 }
 
-func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
+func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
+	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
 	defer wg.Done()
 	select {
 	case <-ctx.Done():
@@ -152,20 +153,20 @@ func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, u
 		return
 	default:
 
-		// newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
 
-		path := "body.deployment.created_at"
-		err := InPlaceUpdateJSONValue(data, path, ts)
-		if err != nil {
-			logger.Sugar().Errorf("Path not found: %s in object\n error: %v", path, err)
-			return
-		}
+		// path := "body.deployment.created_at"
+		// err := InPlaceUpdateJSONValue(data, path, ts)
+		// if err != nil {
+		// 	logger.Sugar().Errorf("Path not found: %s in object\n error: %v", path, err)
+		// 	return
+		// }
 
-		newPayload, err := json.Marshal(data)
-		if err != nil {
-			logger.Sugar().Error("Failed to marshal payload: ", err)
-			return
-		}
+		// newPayload, err := json.Marshal(data)
+		// if err != nil {
+		// 	logger.Sugar().Error("Failed to marshal payload: ", err)
+		// 	return
+		// }
 
 		resp, err := client.Post(url, "application/json", bytes.NewBuffer(newPayload))
 		if err != nil {
@@ -210,25 +211,25 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 		return
 	}
 
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
-		return
-	}
+	// var data map[string]interface{}
+	// if err := json.Unmarshal(payload, &data); err != nil {
+	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
+	// 	return
+	// }
 
-	timestamps := generateTimestamps(1)
+	timestamps := generateTimestamps(20)
 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
 
 	var wg sync.WaitGroup
 	for _, ts := range timestamps {
 		wg.Add(1)
-		go sendPayload(ctx, &wg, client, url, data, ts)
-		// go sendPayload(ctx, &wg, client, url, payload, ts)
+		// go sendPayload(ctx, &wg, client, url, data, ts)
+		go sendPayload(ctx, &wg, client, url, payload, ts)
 	}
 
 	wg.Wait()
 
-	logger.Sugar().Info("Successfully sent deploy.json to the URL")
+	logger.Sugar().Infof("Successfully sent %s to the URL", filePath)
 	logger.Sugar().Info("Successfully pushed logs to Loki")
 }
 
@@ -242,10 +243,11 @@ func main() {
 		return
 	}
 
-	dataPaths := []string{"./data/raw-deployment.json"}
+	dataPaths := []string{"./data/deployment_event-flattened.json"}
 	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
 
 	for _, path := range dataPaths {
 		sendFilePayloadsWithContext(ctx, url, path)
 	}
+	logger.Sugar().Info("Successfully sent all payloads")
 }

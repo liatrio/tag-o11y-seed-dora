@@ -27,7 +27,7 @@
     "description": "",
     "environment": "dev",
     "target_url": "https://github.com/liatrio/dora-deploy-demo/actions/runs/9506030291/job/26202289713",
-    "created_at": "2024-06-09T20:04:28Z",
+    "created_at": "CREATED_AT_UPDATE_ME",
     "updated_at": "2024-06-09T20:04:28Z",
     "deployment_url": "https://api.github.com/repos/liatrio/dora-deploy-demo/deployments/1581402415",
     "repository_url": "https://api.github.com/repos/liatrio/dora-deploy-demo",
