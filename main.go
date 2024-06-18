@@ -138,20 +138,21 @@ func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 	return updatedContent
 }
 
-func generateTimestamps(count int, durationBetweenEvents time.Duration) []string {
-	var timestamps []string
+func generateTimestamps(count int) []string {
+	timestamps := make([]string, count)
 	for i := 1; i <= count; i++ {
-		eventDifference := time.Duration(i) * durationBetweenEvents
-		t := time.Now().Add(-eventDifference)
-		timestamps = append(timestamps, t.Format("2006-01-02T15:04:05Z"))
+		days := time.Duration(i) * 24 * time.Hour
+		t := time.Now().Add(-days)
+		timestamps[count-i] = t.Format("2006-01-02T15:04:05Z")
 	}
 
 	return timestamps
 }
 
-func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
+func sendPayload(ctx context.Context, client *http.Client, url string, payload []byte, ts string) {
+	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
 	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
-	defer wg.Done()
+	// defer wg.Done()
 	select {
 	case <-ctx.Done():
 		logger.Sugar().Info("Context is canceled")
@@ -194,7 +195,8 @@ func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, u
 			logger.Sugar().Errorf("Failed to send request. Status code: %d, Response: %s", resp.StatusCode, string(body))
 			return
 		}
-		logger.Sugar().Info("Successfully sent payload")
+		logger.Sugar().Infof("Successfully sent payload with timestamp: %v", ts)
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -222,7 +224,7 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 	timestamps := generateTimestamps(20)
 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
 
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 	for _, ts := range timestamps {
 		wg.Add(1)
 
