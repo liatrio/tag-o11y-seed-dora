@@ -10,7 +10,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -134,19 +133,20 @@ func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 }
 
 func generateTimestamps(count int) []string {
-	var timestamps []string
+	timestamps := make([]string, count)
 	for i := 1; i <= count; i++ {
 		days := time.Duration(i) * 24 * time.Hour
 		t := time.Now().Add(-days)
-		timestamps = append(timestamps, t.Format("2006-01-02T15:04:05Z"))
+		timestamps[count-i] = t.Format("2006-01-02T15:04:05Z")
 	}
 
 	return timestamps
 }
 
-func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
+func sendPayload(ctx context.Context, client *http.Client, url string, payload []byte, ts string) {
+	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
 	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
-	defer wg.Done()
+	// defer wg.Done()
 	select {
 	case <-ctx.Done():
 		logger.Sugar().Info("Context is canceled")
@@ -189,7 +189,8 @@ func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, u
 			logger.Sugar().Errorf("Failed to send request. Status code: %d, Response: %s", resp.StatusCode, string(body))
 			return
 		}
-		logger.Sugar().Info("Successfully sent payload")
+		logger.Sugar().Infof("Successfully sent payload with timestamp: %v", ts)
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -220,14 +221,15 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 	timestamps := generateTimestamps(20)
 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
 
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 	for _, ts := range timestamps {
-		wg.Add(1)
+		// wg.Add(1)
 		// go sendPayload(ctx, &wg, client, url, data, ts)
-		go sendPayload(ctx, &wg, client, url, payload, ts)
+		// sendPayload(ctx, &wg, client, url, payload, ts)
+		sendPayload(ctx, client, url, payload, ts)
 	}
 
-	wg.Wait()
+	// wg.Wait()
 
 	logger.Sugar().Infof("Successfully sent %s to the URL", filePath)
 	logger.Sugar().Info("Successfully pushed logs to Loki")
@@ -243,7 +245,7 @@ func main() {
 		return
 	}
 
-	dataPaths := []string{"./data/deployment_event-flattened.json"}
+	dataPaths := []string{"./data/pull_request_closed_event-flattened.json"}
 	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
 
 	for _, path := range dataPaths {
