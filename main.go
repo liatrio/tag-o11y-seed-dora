@@ -192,7 +192,6 @@ func sendPayload(client *http.Client, url string, payload []byte) {
 		logger.Sugar().Errorf("Failed to send request. Status code: %d, Response: %s", resp.StatusCode, string(body))
 		return
 	}
-	time.Sleep(500 * time.Millisecond)
 }
 
 // 	client := &http.Client{
