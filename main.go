@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -171,7 +172,18 @@ func generateTimestamps(count int, interval time.Duration) []string {
 }
 
 func sendPayload(client *http.Client, url string, payload []byte) {
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(payload))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
+	if err != nil {
+		logger.Sugar().Error("Failed to create request: ", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+
 	if err != nil {
 		logger.Sugar().Error("Failed to send request: ", err)
 		return
