@@ -16,19 +16,20 @@ import (
 )
 
 var (
-	logger                     *zap.Logger
-	doraElitePerformanceLevel  *DoraPerformanceLevel
-	doraHighPerformanceLevel   *DoraPerformanceLevel
-	doraMediumPerformanceLevel *DoraPerformanceLevel
-	doraLowPerformanceLevel    *DoraPerformanceLevel
-	daysBackToGenerateData     int
-	ghaEventPayload            *GHAEventPayload
-	otelWebhookUrl             string
+	logger                 *zap.Logger
+	doraEliteTeam          *DoraTeam
+	doraHighTeam           *DoraTeam
+	doraMediumTeam         *DoraTeam
+	doraLowTeam            *DoraTeam
+	daysBackToGenerateData int
+	ghaEventPayload        *GHAEventPayload
+	otelWebhookUrl         string
 )
 
-type DoraPerformanceLevel struct {
+type DoraTeam struct {
 	Level                  string
 	DaysBetweenDeployments int
+	RepoName               string
 }
 
 type GHAEventPayload struct {
@@ -69,24 +70,28 @@ func init() {
 		PullRequestClosedPayloadPath: "./data/pull_request_closed_event-flattened.json",
 	}
 
-	doraElitePerformanceLevel = &DoraPerformanceLevel{
+	doraEliteTeam = &DoraTeam{
 		Level:                  "elite",
 		DaysBetweenDeployments: 0, // Will be treated as a special case to indicate multiple deploys per day
+		RepoName:               "dora-elite-repo",
 	}
 
-	doraHighPerformanceLevel = &DoraPerformanceLevel{
+	doraHighTeam = &DoraTeam{
 		Level:                  "high",
 		DaysBetweenDeployments: 1,
+		RepoName:               "dora-high-repo",
 	}
 
-	doraMediumPerformanceLevel = &DoraPerformanceLevel{
+	doraMediumTeam = &DoraTeam{
 		Level:                  "medium",
 		DaysBetweenDeployments: 8,
+		RepoName:               "dora-medium-repo",
 	}
 
-	doraLowPerformanceLevel = &DoraPerformanceLevel{
+	doraLowTeam = &DoraTeam{
 		Level:                  "low",
 		DaysBetweenDeployments: 31,
+		RepoName:               "dora-low-repo",
 	}
 
 	// daysBackToGenerateData = 183 // 6 months
@@ -259,11 +264,11 @@ func main() {
 		return
 	}
 
-	doraTeams := []DoraPerformanceLevel{
-		*doraElitePerformanceLevel,
-		*doraHighPerformanceLevel,
-		*doraMediumPerformanceLevel,
-		*doraLowPerformanceLevel,
+	doraTeams := []DoraTeam{
+		*doraEliteTeam,
+		*doraHighTeam,
+		*doraMediumTeam,
+		*doraLowTeam,
 	}
 
 	//payloadFilePaths := []string{"./data/deployment_event-flattened.json"}
@@ -272,7 +277,7 @@ func main() {
 	doraWg := sync.WaitGroup{}
 	for _, doraTeam := range doraTeams {
 		doraWg.Add(1)
-		go func(doraTeam DoraPerformanceLevel) {
+		go func(doraTeam DoraTeam) {
 			defer doraWg.Done()
 			logger.Sugar().Infof("Dora Performance Level: %s\n", doraTeam.Level)
 			genDeploymentFrequencyEvents(doraTeam)
@@ -286,7 +291,7 @@ func main() {
 	logger.Sugar().Info("Successfully sent all payloads")
 }
 
-func genDeploymentFrequencyEvents(doraTeam DoraPerformanceLevel) {
+func genDeploymentFrequencyEvents(doraTeam DoraTeam) {
 	client := &http.Client{
 		Timeout: time.Second * 10,
 	}
@@ -303,6 +308,8 @@ func genDeploymentFrequencyEvents(doraTeam DoraPerformanceLevel) {
 		logger.Sugar().Error("Failed to read deploy.json: ", err)
 		return
 	}
+
+	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
 
 	// Calculate the number of events we need to send based on the total number
 	// of months we want data for and the number of days between deployments
