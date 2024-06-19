@@ -327,8 +327,14 @@ func genDeploymentFrequencyEvents(doraTeam DoraTeam) {
 	createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
 	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(createdAtTimestamps))
 
+	requestWg := sync.WaitGroup{}
 	for _, ts := range createdAtTimestamps {
 		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
-		sendPayload(client, otelWebhookUrl, newPayload)
+		requestWg.Add(1)
+		go func(payload []byte) {
+			defer requestWg.Done()
+			sendPayload(client, otelWebhookUrl, payload)
+		}(newPayload)
 	}
+	requestWg.Wait()
 }
