@@ -17,15 +17,26 @@ import (
 )
 
 var (
-	logger                     *zap.Logger
-	doraElitePerformanceLevel  *DoraPerformanceLevel
-	doraHighPerformanceLevel   *DoraPerformanceLevel
-	doraMediumPerformanceLevel *DoraPerformanceLevel
-	doraLowPerformanceLevel    *DoraPerformanceLevel
+	logger                 *zap.Logger
+	doraEliteTeam          *DoraTeam
+	doraHighTeam           *DoraTeam
+	doraMediumTeam         *DoraTeam
+	doraLowTeam            *DoraTeam
+	daysBackToGenerateData int
+	ghaEventPayload        *GHAEventPayload
+	otelWebhookUrl         string
 )
 
-type DoraPerformanceLevel struct {
-	Level string `json:"level"`
+type DoraTeam struct {
+	Level                  string
+	DaysBetweenDeployments int
+	RepoName               string
+}
+
+type GHAEventPayload struct {
+	DeploymentCreatedPayloadPath string
+	IssueCreatedPayloadPath      string
+	PullRequestClosedPayloadPath string
 }
 
 // Elite:
@@ -54,21 +65,38 @@ type DoraPerformanceLevel struct {
 func init() {
 	var err error
 
-	doraElitePerformanceLevel = &DoraPerformanceLevel{
-		Level: "elite",
+	ghaEventPayload = &GHAEventPayload{
+		DeploymentCreatedPayloadPath: "./data/deployment_event-flattened.json",
+		IssueCreatedPayloadPath:      "./data/incident_created_event-flattened.json",
+		PullRequestClosedPayloadPath: "./data/pull_request_closed_event-flattened.json",
 	}
 
-	doraHighPerformanceLevel = &DoraPerformanceLevel{
-		Level: "high",
+	doraEliteTeam = &DoraTeam{
+		Level:                  "elite",
+		DaysBetweenDeployments: 0, // Will be treated as a special case to indicate multiple deploys per day
+		RepoName:               "dora-elite-repo",
 	}
 
-	doraMediumPerformanceLevel = &DoraPerformanceLevel{
-		Level: "medium",
+	doraHighTeam = &DoraTeam{
+		Level:                  "high",
+		DaysBetweenDeployments: 1,
+		RepoName:               "dora-high-repo",
 	}
 
-	doraLowPerformanceLevel = &DoraPerformanceLevel{
-		Level: "low",
+	doraMediumTeam = &DoraTeam{
+		Level:                  "medium",
+		DaysBetweenDeployments: 8,
+		RepoName:               "dora-medium-repo",
 	}
+
+	doraLowTeam = &DoraTeam{
+		Level:                  "low",
+		DaysBetweenDeployments: 31,
+		RepoName:               "dora-low-repo",
+	}
+
+	// daysBackToGenerateData = 183 // 6 months
+	daysBackToGenerateData = 31 // 6 months
 
 	rawJSON := []byte(`{
         "level": "debug",
@@ -133,74 +161,155 @@ func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 	return updatedContent
 }
 
-func generateTimestamps(count int) []string {
-	var timestamps []string
+func generateTimestamps(count int, interval time.Duration) []string {
+	timestamps := make([]string, count)
 	for i := 1; i <= count; i++ {
-		days := time.Duration(i) * 24 * time.Hour
-		t := time.Now().Add(-days)
-		timestamps = append(timestamps, t.Format("2006-01-02T15:04:05Z"))
+		t := time.Now().Add(-interval * time.Duration(i))
+		timestamps[count-i] = t.Format("2006-01-02T15:04:05Z")
 	}
 
 	return timestamps
 }
 
-func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, payload []byte, ts string) {
-	// func sendPayload(ctx context.Context, wg *sync.WaitGroup, client *http.Client, url string, data map[string]interface{}, ts string) {
-	defer wg.Done()
-	select {
-	case <-ctx.Done():
-		logger.Sugar().Info("Context is canceled")
+func sendPayload(client *http.Client, url string, payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
+	if err != nil {
+		logger.Sugar().Error("Failed to create request: ", err)
 		return
-	default:
+	}
 
-		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 
-		// path := "body.deployment.created_at"
-		// err := InPlaceUpdateJSONValue(data, path, ts)
-		// if err != nil {
-		// 	logger.Sugar().Errorf("Path not found: %s in object\n error: %v", path, err)
-		// 	return
-		// }
+	if err != nil {
+		logger.Sugar().Error("Failed to send request: ", err)
+		return
+	}
+	defer resp.Body.Close()
 
-		// newPayload, err := json.Marshal(data)
-		// if err != nil {
-		// 	logger.Sugar().Error("Failed to marshal payload: ", err)
-		// 	return
-		// }
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Sugar().Error("Failed to read response body: ", err)
+		return
+	}
 
-		resp, err := client.Post(url, "application/json", bytes.NewBuffer(newPayload))
-		if err != nil {
-			logger.Sugar().Error("Failed to send request: ", err)
-			return
-		}
-		defer resp.Body.Close()
+	if len(body) != 0 {
+		logger.Sugar().Info("Response body: ", string(body))
+	}
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			logger.Sugar().Error("Failed to read response body: ", err)
-			return
-		}
-
-		if len(body) != 0 {
-			logger.Sugar().Info("Response body: ", string(body))
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			logger.Sugar().Errorf("Failed to send request. Status code: %d, Response: %s", resp.StatusCode, string(body))
-			return
-		}
-		logger.Sugar().Info("Successfully sent payload")
+	if resp.StatusCode != http.StatusOK {
+		logger.Sugar().Errorf("Failed to send request. Status code: %d, Response: %s", resp.StatusCode, string(body))
+		return
 	}
 }
 
-func sendFilePayloadsWithContext(ctx context.Context, url string, filePath string) {
+// 	client := &http.Client{
+// 		Timeout: time.Second * 10,
+// 	}
+//
+// 	file, err := os.Open(filePath)
+// 	if err != nil {
+// 		logger.Sugar().Errorf("Failed to open %s: %v", filePath, err)
+// 		return
+// 	}
+// 	defer file.Close()
+//
+// 	payload, err := io.ReadAll(file)
+// 	if err != nil {
+// 		logger.Sugar().Error("Failed to read deploy.json: ", err)
+// 		return
+// 	}
+//
+// 	// Months of data
+// 	numberOfMonths := 6
+// 	var numberOfTimestamps int
+// 	timestamps := generateTimestamps(20)
+// 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
+//
+// 	// var wg sync.WaitGroup
+// 	for _, ts := range timestamps {
+// 		wg.Add(1)
+//
+// 		go func() {
+// 			defer wg.Done()
+// 			switch filePath {
+// 			case "./data/deployment_event-flattened.json":
+// 				logger.Sugar().Infof("Sending deployment event for %s Dora Performance Level", doraTeam.Level)
+// 				payload, err := createDeploymentPayload(doraTeam)
+// 			case "./data/incident_created_event-flattened.json":
+// 				logger.Sugar().Error("Not implemented yet")
+// 			case "./data/pull_request_closed_event-flattened.json":
+// 				logger.Sugar().Error("Not implemented yet")
+// 			default:
+// 			}
+//
+// 			// go sendPayload(ctx, &wg, client, url, data, ts)
+// 			sendPayload(ctx, client, otelWebhookUrl, payload, ts)
+// 		}()
+// 	}
+//
+// 	// var data map[string]interface{}
+// 	// if err := json.Unmarshal(payload, &data); err != nil {
+// 	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
+// 	// 	return
+// 	// }
+//
+// 	// Handle Elite Dora Performance Level
+//
+// 	wg.Wait()
+//
+// 	logger.Sugar().Infof("Successfully sent %s to the URL", filePath)
+// 	logger.Sugar().Info("Successfully pushed logs to Loki")
+// }
+
+func main() {
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
+
+	otelWebhookUrl = os.Getenv("OTEL_WEBHOOK_URL")
+	if otelWebhookUrl == "" {
+		logger.Sugar().Error("OTEL_WEBHOOK_URL is not set")
+		return
+	}
+
+	doraTeams := []DoraTeam{
+		*doraEliteTeam,
+		*doraHighTeam,
+		*doraMediumTeam,
+		*doraLowTeam,
+	}
+
+	//payloadFilePaths := []string{"./data/deployment_event-flattened.json"}
+	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
+
+	doraWg := sync.WaitGroup{}
+	for _, doraTeam := range doraTeams {
+		doraWg.Add(1)
+		go func(doraTeam DoraTeam) {
+			defer doraWg.Done()
+			logger.Sugar().Infof("Dora Performance Level: %s\n", doraTeam.Level)
+			genDeploymentFrequencyEvents(doraTeam)
+		}(doraTeam)
+	}
+
+	doraWg.Wait()
+	// for _, path := range payloadFilePaths {
+	// 	//sendFilePayloadsWithContext(ctx, url, path)
+	// }
+	logger.Sugar().Info("Successfully sent all payloads")
+}
+
+func genDeploymentFrequencyEvents(doraTeam DoraTeam) {
 	client := &http.Client{
 		Timeout: time.Second * 10,
 	}
 
-	file, err := os.Open(filePath)
+	file, err := os.Open(ghaEventPayload.DeploymentCreatedPayloadPath)
 	if err != nil {
-		logger.Sugar().Errorf("Failed to open %s: %v", filePath, err)
+		logger.Sugar().Errorf("Failed to open %s: %v", ghaEventPayload.DeploymentCreatedPayloadPath, err)
 		return
 	}
 	defer file.Close()
@@ -211,43 +320,32 @@ func sendFilePayloadsWithContext(ctx context.Context, url string, filePath strin
 		return
 	}
 
-	// var data map[string]interface{}
-	// if err := json.Unmarshal(payload, &data); err != nil {
-	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
-	// 	return
-	// }
+	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
 
-	timestamps := generateTimestamps(20)
-	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
-
-	var wg sync.WaitGroup
-	for _, ts := range timestamps {
-		wg.Add(1)
-		// go sendPayload(ctx, &wg, client, url, data, ts)
-		go sendPayload(ctx, &wg, client, url, payload, ts)
+	// Calculate the number of events we need to send based on the total number
+	// of months we want data for and the number of days between deployments
+	var deploymentEvents int
+	var interval time.Duration
+	if doraTeam.Level == "elite" {
+		deploymentEvents = daysBackToGenerateData * 2
+		interval = time.Hour * 12
+	} else {
+		deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
+		interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
 	}
+	logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
 
-	wg.Wait()
+	createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
+	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(createdAtTimestamps))
 
-	logger.Sugar().Infof("Successfully sent %s to the URL", filePath)
-	logger.Sugar().Info("Successfully pushed logs to Loki")
-}
-
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	url := os.Getenv("OTEL_WEBHOOK_URL")
-	if url == "" {
-		logger.Sugar().Error("OTEL_WEBHOOK_URL is not set")
-		return
+	requestWg := sync.WaitGroup{}
+	for _, ts := range createdAtTimestamps {
+		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+		requestWg.Add(1)
+		go func(payload []byte) {
+			defer requestWg.Done()
+			sendPayload(client, otelWebhookUrl, payload)
+		}(newPayload)
 	}
-
-	dataPaths := []string{"./data/deployment_event-flattened.json"}
-	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
-
-	for _, path := range dataPaths {
-		sendFilePayloadsWithContext(ctx, url, path)
-	}
-	logger.Sugar().Info("Successfully sent all payloads")
+	requestWg.Wait()
 }
