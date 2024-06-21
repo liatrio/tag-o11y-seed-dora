@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,9 +29,11 @@ var (
 )
 
 type DoraTeam struct {
-	Level                  string
-	DaysBetweenDeployments int
-	RepoName               string
+	Level                   string
+	DaysBetweenDeployments  int
+	MinutesToRestoreService int
+	RepoName                string
+	ChangeFailurePercent    float64
 }
 
 type GHAEventPayload struct {
@@ -44,18 +47,19 @@ type GHAEventPayload struct {
 // 	Lead Time for Changes: Less than one day
 // 	Time to Restore Service: Less than one hour
 // 	Change Failure Rate: 0-15%
-
+//
 // High:
 // 	Deployment Frequency: Between once per day and once per week
 // 	Lead Time for Changes: Between one day and one week
 // 	Time to Restore Service: Less than one day
 // 	Change Failure Rate: 0-15%
-
+//
 // Medium:
 // 	Deployment Frequency: Between once per week and once per month
 // 	Lead Time for Changes: Between one week and one month
 // 	Time to Restore Service: Less than one day
 // 	Change Failure Rate: 0-30%
+//
 // Low:
 // 	Deployment Frequency: Between once per month and once every six months
 // 	Lead Time for Changes: Between one month and six months
@@ -72,27 +76,35 @@ func init() {
 	}
 
 	doraEliteTeam = &DoraTeam{
-		Level:                  "elite",
-		DaysBetweenDeployments: 0, // Will be treated as a special case to indicate multiple deploys per day
-		RepoName:               "dora-elite-repo",
+		Level:                   "elite",
+		DaysBetweenDeployments:  0, // Will be treated as a special case to indicate multiple deploys per day
+		MinutesToRestoreService: 30,
+		RepoName:                "dora-elite-repo",
+		ChangeFailurePercent:    .05,
 	}
 
 	doraHighTeam = &DoraTeam{
-		Level:                  "high",
-		DaysBetweenDeployments: 1,
-		RepoName:               "dora-high-repo",
+		Level:                   "high",
+		DaysBetweenDeployments:  1,
+		MinutesToRestoreService: 180, // 3 hours
+		RepoName:                "dora-high-repo",
+		ChangeFailurePercent:    .10,
 	}
 
 	doraMediumTeam = &DoraTeam{
-		Level:                  "medium",
-		DaysBetweenDeployments: 8,
-		RepoName:               "dora-medium-repo",
+		Level:                   "medium",
+		DaysBetweenDeployments:  8,
+		MinutesToRestoreService: 480, // 8 hours
+		RepoName:                "dora-medium-repo",
+		ChangeFailurePercent:    .25,
 	}
 
 	doraLowTeam = &DoraTeam{
-		Level:                  "low",
-		DaysBetweenDeployments: 31,
-		RepoName:               "dora-low-repo",
+		Level:                   "low",
+		DaysBetweenDeployments:  31,
+		MinutesToRestoreService: 4320, // 3 days
+		RepoName:                "dora-low-repo",
+		ChangeFailurePercent:    .40,
 	}
 
 	// daysBackToGenerateData = 183 // 6 months
@@ -123,6 +135,28 @@ func init() {
 			return
 		}
 	}()
+}
+
+func getEvenlyDistributedIndexes(timestamps []time.Time, M int) []int {
+	N := len(timestamps)
+	if M >= N {
+		// If M is greater than or equal to N, return all indexes
+		indexes := make([]int, N)
+		for i := range indexes {
+			indexes[i] = i
+		}
+		return indexes
+	}
+
+	// Calculate the step size
+	step := float64(N-1) / float64(M-1)
+	indexes := make([]int, M)
+
+	for i := 0; i < M; i++ {
+		indexes[i] = int(float64(i) * step)
+	}
+
+	return indexes
 }
 
 // InPlaceUpdateJSONValue updates the value of a JSON field in a map in place.
@@ -161,14 +195,22 @@ func stringReplaceFirst(b []byte, pattern string, repl string) []byte {
 	return updatedContent
 }
 
-func generateTimestamps(count int, interval time.Duration) []string {
-	timestamps := make([]string, count)
+func generateTimestamps(count int, interval time.Duration) []time.Time {
+	timestamps := make([]time.Time, count)
 	for i := 1; i <= count; i++ {
 		t := time.Now().Add(-interval * time.Duration(i))
-		timestamps[count-i] = t.Format("2006-01-02T15:04:05Z")
+		// timestamps[count-i] = t.Format("2006-01-02T15:04:05Z")
+		timestamps[count-i] = t
 	}
 
 	return timestamps
+}
+
+func generateCommitSha(timestamp string) string {
+	sha := sha1.New()
+	sha.Write([]byte(timestamp))
+	bs := sha.Sum(nil)
+	return fmt.Sprintf("%x", bs)
 }
 
 func sendPayload(client *http.Client, url string, payload []byte) {
@@ -206,65 +248,6 @@ func sendPayload(client *http.Client, url string, payload []byte) {
 	}
 }
 
-// 	client := &http.Client{
-// 		Timeout: time.Second * 10,
-// 	}
-//
-// 	file, err := os.Open(filePath)
-// 	if err != nil {
-// 		logger.Sugar().Errorf("Failed to open %s: %v", filePath, err)
-// 		return
-// 	}
-// 	defer file.Close()
-//
-// 	payload, err := io.ReadAll(file)
-// 	if err != nil {
-// 		logger.Sugar().Error("Failed to read deploy.json: ", err)
-// 		return
-// 	}
-//
-// 	// Months of data
-// 	numberOfMonths := 6
-// 	var numberOfTimestamps int
-// 	timestamps := generateTimestamps(20)
-// 	logger.Sugar().Infof("Timestamps: %v\n", timestamps)
-//
-// 	// var wg sync.WaitGroup
-// 	for _, ts := range timestamps {
-// 		wg.Add(1)
-//
-// 		go func() {
-// 			defer wg.Done()
-// 			switch filePath {
-// 			case "./data/deployment_event-flattened.json":
-// 				logger.Sugar().Infof("Sending deployment event for %s Dora Performance Level", doraTeam.Level)
-// 				payload, err := createDeploymentPayload(doraTeam)
-// 			case "./data/incident_created_event-flattened.json":
-// 				logger.Sugar().Error("Not implemented yet")
-// 			case "./data/pull_request_closed_event-flattened.json":
-// 				logger.Sugar().Error("Not implemented yet")
-// 			default:
-// 			}
-//
-// 			// go sendPayload(ctx, &wg, client, url, data, ts)
-// 			sendPayload(ctx, client, otelWebhookUrl, payload, ts)
-// 		}()
-// 	}
-//
-// 	// var data map[string]interface{}
-// 	// if err := json.Unmarshal(payload, &data); err != nil {
-// 	// 	logger.Sugar().Error("Failed to unmarshal deploy.json: ", err)
-// 	// 	return
-// 	// }
-//
-// 	// Handle Elite Dora Performance Level
-//
-// 	wg.Wait()
-//
-// 	logger.Sugar().Infof("Successfully sent %s to the URL", filePath)
-// 	logger.Sugar().Info("Successfully pushed logs to Loki")
-// }
-
 func main() {
 	// ctx, cancel := context.WithCancel(context.Background())
 	// defer cancel()
@@ -282,27 +265,147 @@ func main() {
 		*doraLowTeam,
 	}
 
-	//payloadFilePaths := []string{"./data/deployment_event-flattened.json"}
-	// dataPaths := []string{"./data/deployment_event-flattened.json", "./data/incident_created_event-flattened.json", "./data/pull_request_closed_event-flattened.json"}
-
 	doraWg := sync.WaitGroup{}
 	for _, doraTeam := range doraTeams {
 		doraWg.Add(1)
 		go func(doraTeam DoraTeam) {
 			defer doraWg.Done()
 			logger.Sugar().Infof("Dora Performance Level: %s\n", doraTeam.Level)
-			genDeploymentFrequencyEvents(doraTeam)
+
+			var deploymentEvents int
+			var interval time.Duration
+			if doraTeam.Level == "elite" {
+				deploymentEvents = daysBackToGenerateData * 2
+				interval = time.Hour * 12
+			} else {
+				deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
+				interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
+			}
+			logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
+
+			// Generate successful deploy events for Deployment Frequency
+			successfulDeployTimestamps := generateTimestamps(deploymentEvents, interval)
+			sendDeploymentEvent(doraTeam, successfulDeployTimestamps)
+
+			// Generate Deployment and Incidents for Change Failure Rate and Time to Restore Service
+			deployTimestampsThatCauseIncidents, incidentTimestamps := createIncidentTimestamps(doraTeam, successfulDeployTimestamps)
+			sendDeploymentEvent(doraTeam, deployTimestampsThatCauseIncidents)
+			sendIncidentEvents(doraTeam, incidentTimestamps)
 		}(doraTeam)
 	}
 
 	doraWg.Wait()
-	// for _, path := range payloadFilePaths {
-	// 	//sendFilePayloadsWithContext(ctx, url, path)
-	// }
 	logger.Sugar().Info("Successfully sent all payloads")
 }
 
-func genDeploymentFrequencyEvents(doraTeam DoraTeam) {
+// A deploy is considered successful if it is not followed by an incident
+// So in order to not mess with the deployment frequency, we will generate
+// a successful deploy event followed by an incident before the passed in
+// timestamp of a successful deploy. This should result in us being able to
+// tell the incident response time. While not effecting the deployment frequency
+//
+// Example:
+// Successful Deploy at 2024-04-10T12:00:00Z - Existing deploy for daily frequency
+// Successful Deploy at 2024-04-11T12:00:00Z - Existing deploy for daily frequency
+// Successful Deploy at 2024-04-12T13:00:00Z - New failed deploy
+// Incident at 2024-04-11T14:00:00Z          - Incident response time is 1 hour
+// Successful Deploy at 2024-04-12T12:00:00Z - Existing deploy for daily frequency
+//
+// We need to generate enough incidents to fit the Change Failure Rate
+// And recover in the correct amount of time for the Time to Restore Service
+func createIncidentTimestamps(doraTeam DoraTeam, successfulDeployTimestamps []time.Time) (deployTimestampsThatCauseIncidents []time.Time, incidentTimestamps []time.Time) {
+	// Elite:
+	// 	Deployment Frequency: On-demand (multiple deploys per day)
+	// 	Lead Time for Changes: Less than one day
+	// 	Time to Restore Service: Less than one hour
+	// 	Change Failure Rate: 0-15%
+	//
+	// High:
+	// 	Deployment Frequency: Between once per day and once per week
+	// 	Lead Time for Changes: Between one day and one week
+	// 	Time to Restore Service: Less than one day
+	// 	Change Failure Rate: 0-15%
+	//
+	// Medium:
+	// 	Deployment Frequency: Between once per week and once per month
+	// 	Lead Time for Changes: Between one week and one month
+	// 	Time to Restore Service: Less than one day
+	// 	Change Failure Rate: 0-30%
+	// Low:
+	// 	Deployment Frequency: Between once per month and once every six months
+	// 	Lead Time for Changes: Between one month and six months
+	// 	Time to Restore Service: Between one day and one week
+	// 	Change Failure Rate: 0-45%
+	numberOfIncidentsForChangeFailureRate := int(float64(len(successfulDeployTimestamps)) * doraTeam.ChangeFailurePercent)
+	if numberOfIncidentsForChangeFailureRate == 0 {
+		numberOfIncidentsForChangeFailureRate = 1 // always generate at least 1 incident
+	}
+
+	indexes := getEvenlyDistributedIndexes(successfulDeployTimestamps, numberOfIncidentsForChangeFailureRate)
+
+	for _, index := range indexes {
+		incidentTimestamps = append(
+			incidentTimestamps,
+			successfulDeployTimestamps[index].Add(-time.Duration(doraTeam.MinutesToRestoreService)*time.Minute),
+		)
+	}
+	for _, incidentTimestamp := range incidentTimestamps {
+		deployTimestampsThatCauseIncidents = append(deployTimestampsThatCauseIncidents, incidentTimestamp.Add(-10*time.Minute))
+	}
+
+	return deployTimestampsThatCauseIncidents, incidentTimestamps
+}
+
+// Returns a slice of timestamps corresponding to when successful deployments were created
+func sendIncidentEvents(doraTeam DoraTeam, issueTimestamps []time.Time) {
+	logger.Sugar().Infof("Sending %v incident events for %s Dora Performance Level\n", len(issueTimestamps), doraTeam.Level)
+	client := &http.Client{
+		Timeout: time.Second * 10,
+	}
+
+	file, err := os.Open(ghaEventPayload.IssueCreatedPayloadPath)
+	if err != nil {
+		logger.Sugar().Errorf("Failed to open %s: %v", ghaEventPayload.IssueCreatedPayloadPath, err)
+		return
+	}
+	defer file.Close()
+
+	payload, err := io.ReadAll(file)
+	if err != nil {
+		logger.Sugar().Error("Failed to read deploy.json: ", err)
+		return
+	}
+
+	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
+
+	// Calculate the number of events we need to send based on the total number
+	// of months we want data for and the number of days between deployments
+	// var deploymentEvents int
+	// var interval time.Duration
+	// if doraTeam.Level == "elite" {
+	// 	deploymentEvents = daysBackToGenerateData * 2
+	// 	interval = time.Hour * 12
+	// } else {
+	// 	deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
+	// 	interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
+	// }
+	// logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
+
+	// createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
+	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(issueTimestamps))
+
+	requestWg := sync.WaitGroup{}
+	for _, ts := range issueTimestamps {
+		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts.Format("2006-01-02T15:04:05Z"))
+		requestWg.Add(1)
+		go func(payload []byte) {
+			defer requestWg.Done()
+			sendPayload(client, otelWebhookUrl, payload)
+		}(newPayload)
+	}
+	requestWg.Wait()
+}
+func sendDeploymentEvent(doraTeam DoraTeam, successfulDeployTimestamps []time.Time) {
 	client := &http.Client{
 		Timeout: time.Second * 10,
 	}
@@ -324,23 +427,23 @@ func genDeploymentFrequencyEvents(doraTeam DoraTeam) {
 
 	// Calculate the number of events we need to send based on the total number
 	// of months we want data for and the number of days between deployments
-	var deploymentEvents int
-	var interval time.Duration
-	if doraTeam.Level == "elite" {
-		deploymentEvents = daysBackToGenerateData * 2
-		interval = time.Hour * 12
-	} else {
-		deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
-		interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
-	}
-	logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
+	// var deploymentEvents int
+	// var interval time.Duration
+	// if doraTeam.Level == "elite" {
+	// 	deploymentEvents = daysBackToGenerateData * 2
+	// 	interval = time.Hour * 12
+	// } else {
+	// 	deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
+	// 	interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
+	// }
+	// logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
 
-	createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
-	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(createdAtTimestamps))
+	// createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
+	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(successfulDeployTimestamps))
 
 	requestWg := sync.WaitGroup{}
-	for _, ts := range createdAtTimestamps {
-		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts)
+	for _, ts := range successfulDeployTimestamps {
+		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts.Format("2006-01-02T15:04:05Z"))
 		requestWg.Add(1)
 		go func(payload []byte) {
 			defer requestWg.Done()
