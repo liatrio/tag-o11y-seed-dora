@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // SHA1 is used to fake git commits
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +34,7 @@ type DoraTeam struct {
 	MinutesToRestoreService int
 	RepoName                string
 	ChangeFailurePercent    float64
+	HoursBetweenDeployments int
 }
 
 type GHAEventPayload struct {
@@ -78,6 +79,7 @@ func init() {
 	doraEliteTeam = &DoraTeam{
 		Level:                   "elite",
 		DaysBetweenDeployments:  0, // Will be treated as a special case to indicate multiple deploys per day
+		HoursBetweenDeployments: 8,
 		MinutesToRestoreService: 30,
 		RepoName:                "dora-elite-repo",
 		ChangeFailurePercent:    .05,
@@ -86,6 +88,7 @@ func init() {
 	doraHighTeam = &DoraTeam{
 		Level:                   "high",
 		DaysBetweenDeployments:  1,
+		HoursBetweenDeployments: 24,
 		MinutesToRestoreService: 180, // 3 hours
 		RepoName:                "dora-high-repo",
 		ChangeFailurePercent:    .10,
@@ -94,6 +97,7 @@ func init() {
 	doraMediumTeam = &DoraTeam{
 		Level:                   "medium",
 		DaysBetweenDeployments:  8,
+		HoursBetweenDeployments: 192,
 		MinutesToRestoreService: 480, // 8 hours
 		RepoName:                "dora-medium-repo",
 		ChangeFailurePercent:    .25,
@@ -102,6 +106,7 @@ func init() {
 	doraLowTeam = &DoraTeam{
 		Level:                   "low",
 		DaysBetweenDeployments:  31,
+		HoursBetweenDeployments: 744,
 		MinutesToRestoreService: 4320, // 3 days
 		RepoName:                "dora-low-repo",
 		ChangeFailurePercent:    .40,
@@ -206,6 +211,7 @@ func generateTimestamps(count int, interval time.Duration) []time.Time {
 	return timestamps
 }
 
+//nolint:gosec // SHA1 is used to fake git commits
 func generateCommitSha(timestamp string) string {
 	sha := sha1.New()
 	sha.Write([]byte(timestamp))
@@ -286,6 +292,9 @@ func main() {
 			// Generate successful deploy events for Deployment Frequency
 			successfulDeployTimestamps := generateTimestamps(deploymentEvents, interval)
 			sendDeploymentEvent(doraTeam, successfulDeployTimestamps)
+
+			// Send Pull Request events for Lead Time for Changes
+			sendPullRequestEvent(doraTeam, successfulDeployTimestamps)
 
 			// Generate Deployment and Incidents for Change Failure Rate and Time to Restore Service
 			deployTimestampsThatCauseIncidents, incidentTimestamps := createIncidentTimestamps(doraTeam, successfulDeployTimestamps)
@@ -378,25 +387,12 @@ func sendIncidentEvents(doraTeam DoraTeam, issueTimestamps []time.Time) {
 
 	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
 
-	// Calculate the number of events we need to send based on the total number
-	// of months we want data for and the number of days between deployments
-	// var deploymentEvents int
-	// var interval time.Duration
-	// if doraTeam.Level == "elite" {
-	// 	deploymentEvents = daysBackToGenerateData * 2
-	// 	interval = time.Hour * 12
-	// } else {
-	// 	deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
-	// 	interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
-	// }
-	// logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
-
-	// createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
 	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(issueTimestamps))
 
 	requestWg := sync.WaitGroup{}
 	for _, ts := range issueTimestamps {
 		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts.Format("2006-01-02T15:04:05Z"))
+		newPayload = stringReplaceFirst(newPayload, "ISSUE_TITLE_UPDATE_ME", fmt.Sprintf("Incident for deployment at %s", ts.Format("2006-01-02T15:04:05Z")))
 		requestWg.Add(1)
 		go func(payload []byte) {
 			defer requestWg.Done()
@@ -425,25 +421,55 @@ func sendDeploymentEvent(doraTeam DoraTeam, successfulDeployTimestamps []time.Ti
 
 	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
 
-	// Calculate the number of events we need to send based on the total number
-	// of months we want data for and the number of days between deployments
-	// var deploymentEvents int
-	// var interval time.Duration
-	// if doraTeam.Level == "elite" {
-	// 	deploymentEvents = daysBackToGenerateData * 2
-	// 	interval = time.Hour * 12
-	// } else {
-	// 	deploymentEvents = daysBackToGenerateData / doraTeam.DaysBetweenDeployments
-	// 	interval = time.Hour * 24 * time.Duration(doraTeam.DaysBetweenDeployments)
-	// }
-	// logger.Sugar().Infof("Generating %v deployment events at %v intervals for %s Dora Performance Level", deploymentEvents, interval, doraTeam.Level)
-
-	// createdAtTimestamps := generateTimestamps(deploymentEvents, interval)
 	logger.Sugar().Infof("Dora Performance Level: %s, Created %v Timestamps\n", doraTeam.Level, len(successfulDeployTimestamps))
 
 	requestWg := sync.WaitGroup{}
 	for _, ts := range successfulDeployTimestamps {
 		newPayload := stringReplaceFirst(payload, "CREATED_AT_UPDATE_ME", ts.Format("2006-01-02T15:04:05Z"))
+		commitSha := generateCommitSha(ts.Format("2006-01-02T15:04:05Z"))
+		newPayload = stringReplaceFirst(newPayload, "MERGE_SHA_UPDATE_ME", commitSha)
+		requestWg.Add(1)
+		go func(payload []byte) {
+			defer requestWg.Done()
+			sendPayload(client, otelWebhookUrl, payload)
+		}(newPayload)
+	}
+	requestWg.Wait()
+}
+
+func sendPullRequestEvent(doraTeam DoraTeam, successfulDeployTimestamps []time.Time) {
+	client := &http.Client{
+		Timeout: time.Second * 10,
+	}
+
+	file, err := os.Open(ghaEventPayload.PullRequestClosedPayloadPath)
+	if err != nil {
+		logger.Sugar().Errorf("Failed to open %s: %v", ghaEventPayload.DeploymentCreatedPayloadPath, err)
+		return
+	}
+	defer file.Close()
+
+	payload, err := io.ReadAll(file)
+	if err != nil {
+		logger.Sugar().Errorf("Failed to read %s: %v", ghaEventPayload.PullRequestClosedPayloadPath, err)
+		return
+	}
+
+	payload = stringReplaceFirst(payload, "REPO_NAME_UPDATE_ME", doraTeam.RepoName)
+
+	requestWg := sync.WaitGroup{}
+	for _, ts := range successfulDeployTimestamps {
+		// Generate merged at timestamps relative to a successful deploy based on the teams
+		// performance level
+		pullRequestMergeTimestamp := ts.Add(-time.Hour * time.Duration(doraTeam.HoursBetweenDeployments))
+
+		// Deployment commit sha's are calculated based on the deployment timestamp
+		// Using the same timestamp for the pull request sha will link them together.
+		commitSha := generateCommitSha(ts.Format("2006-01-02T15:04:05Z"))
+		newPayload := stringReplaceFirst(payload, "MERGED_AT_UPDATE_ME", pullRequestMergeTimestamp.Format("2006-01-02T15:04:05Z"))
+		newPayload = stringReplaceFirst(newPayload, "PULL_REQUEST_TITLE_UPDATE_ME", fmt.Sprintf("Pull Request for deployment at %s", ts.Format("2006-01-02T15:04:05Z")))
+		newPayload = stringReplaceFirst(newPayload, "CLOSED_AT_UPDATE_ME", pullRequestMergeTimestamp.Format("2006-01-02T15:04:05Z"))
+		newPayload = stringReplaceFirst(newPayload, "MERGE_SHA_UPDATE_ME", commitSha)
 		requestWg.Add(1)
 		go func(payload []byte) {
 			defer requestWg.Done()
