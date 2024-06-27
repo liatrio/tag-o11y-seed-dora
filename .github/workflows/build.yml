@@ -91,7 +91,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
+        uses: goreleaser/goreleaser-action@v6
         if: steps.cache.outputs.cache-hit != 'true'
         with:
           distribution: goreleaser-pro
@@ -124,7 +124,7 @@ jobs:
         run: make test
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
 
   go-semantic-release:
     if: ${{ github.ref == 'refs/heads/main' }}
